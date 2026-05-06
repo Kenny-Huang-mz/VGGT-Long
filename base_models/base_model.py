@@ -215,6 +215,7 @@ class Pi3Adapter(Base3DModel):
         Pi3 expects batched input of shape [1, B, 3, H, W].
         """
         from base_models.pi3.utils.basic import load_images_as_tensor_pi_long
+        from base_models.pi3.utils.geometry import depth_edge, recover_intrinsic_from_rays_d
 
         # Load images as Tensor: [B, 3, H, W]
         images = load_images_as_tensor_pi_long(image_paths).to(self.device)
@@ -233,21 +234,37 @@ class Pi3Adapter(Base3DModel):
         predictions['images'] = images[None]
 
         # Fix confidence: apply sigmoid (as per official Pi3 issue #55)
-        conf = predictions['conf']
-        conf = torch.sigmoid(conf)
-        predictions['conf'] = conf.squeeze(-1)
+        raw_conf = predictions['conf'][..., 0]
+        conf_prob = torch.sigmoid(raw_conf)
+        predictions['conf'] = raw_conf
+        predictions['conf_prob'] = conf_prob
+
+        local_points = predictions['local_points']
+        rays_d = torch.nn.functional.normalize(local_points, dim=-1)
+        intrinsics = recover_intrinsic_from_rays_d(
+            rays_d,
+            force_center_principal_point=True,
+        )
+        depth = local_points[..., 2:3]
+        non_edge = ~depth_edge(local_points[..., 2], rtol=0.03)
+        default_mask = torch.logical_and(conf_prob > 0.1, non_edge)
 
         torch.cuda.empty_cache()
 
         return {
             'world_points': predictions['points'],
-            'world_points_conf': predictions['conf'],
+            'world_points_conf': conf_prob,
             'extrinsic': predictions['camera_poses'],  # already C2W
-            'intrinsic': None,
-            'depth': None,
-            'depth_conf': None,
+            'intrinsic': intrinsics,
+            'depth': depth,
+            'depth_conf': conf_prob.unsqueeze(-1),
             'images': predictions['images'],
-            'mask': None
+            'mask': default_mask,
+            'camera_poses': predictions['camera_poses'],
+            'local_points': local_points,
+            'conf': raw_conf,
+            'conf_prob': conf_prob,
+            'default_mask': default_mask,
         }
 
 

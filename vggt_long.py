@@ -43,6 +43,23 @@ import sys
 from loop_utils.config_utils import load_config
 from pathlib import Path
 
+
+def apply_sim3_to_camera_pose(c2w, s, R, t):
+    transform = np.eye(4, dtype=c2w.dtype)
+    transform[:3, :3] = s * R
+    transform[:3, 3] = t
+    transformed_c2w = transform @ c2w
+    transformed_c2w[:3, :3] /= s
+    return transformed_c2w
+
+
+def apply_sim3_to_camera_poses(c2w_poses, s, R, t):
+    transformed = np.empty_like(c2w_poses)
+    for idx, c2w in enumerate(c2w_poses):
+        transformed[idx] = apply_sim3_to_camera_pose(c2w, s, R, t)
+    return transformed
+
+
 def remove_duplicates(data_list):
     """
         data_list: [(67, (3386, 3406), 48, (2435, 2455)), ...]
@@ -424,6 +441,10 @@ class VGGT_Long:
                                      allow_pickle=True).item()
 
             chunk_data['world_points'] = apply_sim3_direct(chunk_data['world_points'], s, R, t)
+            if chunk_data.get('extrinsic') is not None:
+                chunk_data['extrinsic'] = apply_sim3_to_camera_poses(chunk_data['extrinsic'], s, R, t)
+            if chunk_data.get('camera_poses') is not None:
+                chunk_data['camera_poses'] = apply_sim3_to_camera_poses(chunk_data['camera_poses'], s, R, t)
 
 
             aligned_path = os.path.join(self.result_aligned_dir, f"chunk_{chunk_idx + 1}.npy")
@@ -589,6 +610,128 @@ class VGGT_Long:
                 f.write(f'{position[0]} {position[1]} {position[2]} {color[0]} {color[1]} {color[2]}\n')
 
         print(f"Camera poses visualization saved to {ply_path}")
+
+    def _load_final_chunk_data(self, chunk_idx):
+        aligned_path = os.path.join(self.result_aligned_dir, f"chunk_{chunk_idx}.npy")
+        if os.path.exists(aligned_path):
+            return np.load(aligned_path, allow_pickle=True).item()
+
+        unaligned_path = os.path.join(self.result_unaligned_dir, f"chunk_{chunk_idx}.npy")
+        if os.path.exists(unaligned_path):
+            return np.load(unaligned_path, allow_pickle=True).item()
+
+        raise FileNotFoundError(f"Missing chunk results for chunk_{chunk_idx}")
+
+    def _build_aligned_camera_poses(self):
+        all_poses = [None] * len(self.img_list)
+        all_intrinsics = [None] * len(self.img_list)
+
+        first_chunk_range, first_chunk_extrinsics = self.all_camera_poses[0]
+        _, first_chunk_intrinsics = self.all_camera_intrinsics[0]
+        for i, idx in enumerate(range(first_chunk_range[0], first_chunk_range[1])):
+            all_poses[idx] = first_chunk_extrinsics[i]
+            if first_chunk_intrinsics is not None:
+                all_intrinsics[idx] = first_chunk_intrinsics[i]
+
+        for chunk_idx in range(1, len(self.all_camera_poses)):
+            chunk_range, chunk_extrinsics = self.all_camera_poses[chunk_idx]
+            _, chunk_intrinsics = self.all_camera_intrinsics[chunk_idx]
+            s, R, t = self.sim3_list[chunk_idx - 1]
+
+            for i, idx in enumerate(range(chunk_range[0], chunk_range[1])):
+                transformed_c2w = apply_sim3_to_camera_pose(chunk_extrinsics[i], s, R, t)
+                all_poses[idx] = transformed_c2w
+                if chunk_intrinsics is not None:
+                    all_intrinsics[idx] = chunk_intrinsics[i]
+
+        return all_poses, all_intrinsics
+
+    def collect_aligned_reconstruction(self):
+        if self.img_list is None or self.chunk_indices is None:
+            raise RuntimeError("Run the pipeline before collecting reconstruction results.")
+
+        per_frame = {
+            'image_names': np.array(self.img_list),
+            'images': [None] * len(self.img_list),
+            'world_points': [None] * len(self.img_list),
+            'world_points_conf': [None] * len(self.img_list),
+            'depth': [None] * len(self.img_list),
+            'depth_conf': [None] * len(self.img_list),
+            'intrinsic': [None] * len(self.img_list),
+            'local_points': [None] * len(self.img_list),
+            'conf': [None] * len(self.img_list),
+            'conf_prob': [None] * len(self.img_list),
+            'default_mask': [None] * len(self.img_list),
+        }
+        frame_filled = np.zeros(len(self.img_list), dtype=bool)
+
+        for chunk_idx, (start_idx, end_idx) in enumerate(self.chunk_indices):
+            chunk_data = self._load_final_chunk_data(chunk_idx)
+            for local_idx, global_idx in enumerate(range(start_idx, end_idx)):
+                if frame_filled[global_idx]:
+                    continue
+
+                per_frame['images'][global_idx] = chunk_data['images'][local_idx]
+                per_frame['world_points'][global_idx] = chunk_data['world_points'][local_idx]
+                per_frame['world_points_conf'][global_idx] = chunk_data['world_points_conf'][local_idx]
+
+                for key in ('depth', 'depth_conf', 'intrinsic', 'local_points', 'conf', 'conf_prob', 'default_mask'):
+                    value = chunk_data.get(key)
+                    if value is not None:
+                        per_frame[key][global_idx] = value[local_idx]
+
+                frame_filled[global_idx] = True
+
+        if not np.all(frame_filled):
+            missing = np.where(~frame_filled)[0].tolist()
+            raise RuntimeError(f"Some frames were not reconstructed: {missing[:10]}")
+
+        all_camera_poses, all_intrinsics = self._build_aligned_camera_poses()
+        camera_poses = np.stack(all_camera_poses, axis=0)
+        extrinsic = np.linalg.inv(camera_poses)[:, :3, :]
+
+        result = {
+            'image_names': per_frame['image_names'],
+            'images': np.stack(per_frame['images'], axis=0),
+            'world_points': np.stack(per_frame['world_points'], axis=0),
+            'world_points_conf': np.stack(per_frame['world_points_conf'], axis=0),
+            'camera_poses': camera_poses,
+            'extrinsic': extrinsic,
+            'chunk_indices': np.asarray(self.chunk_indices, dtype=np.int32),
+            'source_model': np.array(self.config['Weights']['model']),
+            'loop_enabled': np.array(self.loop_enable, dtype=np.bool_),
+            'image_dir': np.array(self.img_dir),
+        }
+
+        if per_frame['depth'][0] is not None:
+            result['depth'] = np.stack(per_frame['depth'], axis=0)
+        if per_frame['depth_conf'][0] is not None:
+            result['depth_conf'] = np.stack(per_frame['depth_conf'], axis=0)
+        if per_frame['intrinsic'][0] is not None:
+            result['intrinsic'] = np.stack(per_frame['intrinsic'], axis=0)
+            result['intrinsics'] = result['intrinsic']
+        elif all_intrinsics[0] is not None:
+            result['intrinsic'] = np.stack(all_intrinsics, axis=0)
+            result['intrinsics'] = result['intrinsic']
+        if per_frame['local_points'][0] is not None:
+            result['local_points'] = np.stack(per_frame['local_points'], axis=0)
+        if per_frame['conf'][0] is not None:
+            result['conf'] = np.stack(per_frame['conf'], axis=0)
+        if per_frame['conf_prob'][0] is not None:
+            result['conf_prob'] = np.stack(per_frame['conf_prob'], axis=0)
+        if per_frame['default_mask'][0] is not None:
+            result['default_mask'] = np.stack(per_frame['default_mask'], axis=0)
+
+        return result
+
+    def export_reconstruction_npz(self, out_path):
+        result = self.collect_aligned_reconstruction()
+        out_dir = os.path.dirname(os.path.abspath(out_path))
+        if out_dir:
+            os.makedirs(out_dir, exist_ok=True)
+        np.savez_compressed(out_path, **result)
+        print(f"Saved aligned reconstruction to {out_path}")
+        return out_path
 
     def close(self):
         '''
