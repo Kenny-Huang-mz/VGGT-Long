@@ -124,13 +124,6 @@ def main():
             )
             frustums.append(frustum)
 
-            label = image_names[idx]
-            server.scene.add_label(
-                f"frame_{idx}/label",
-                text=str(label),
-                position=frame_pose.translation(),
-            )
-
             @frustum.on_click
             def _(_, frame_handle=frame):
                 for client in server.get_clients().values():

@@ -1,6 +1,7 @@
 import argparse
 import glob
 import os
+import random
 import shutil
 from datetime import datetime
 
@@ -63,6 +64,18 @@ def materialize_selected_images(image_paths, save_dir):
     return selected_dir
 
 
+def shuffle_with_fixed_first(image_paths, seed):
+    if len(image_paths) <= 1:
+        return image_paths
+
+    shuffled = list(image_paths)
+    first_image = shuffled[0]
+    remaining = shuffled[1:]
+    rng = random.Random(seed)
+    rng.shuffle(remaining)
+    return [first_image] + remaining
+
+
 def main():
     parser = argparse.ArgumentParser(description="Run VGGT-Long and save the final aligned reconstruction as .npz.")
     parser.add_argument("--image_dir", type=str, required=True, help="Input image directory.")
@@ -82,6 +95,12 @@ def main():
     parser.add_argument("--max_images", type=int, default=None, help="Use only the first N input images.")
     parser.add_argument("--begin", type=int, default=None, help="Select start frame index, 1-based.")
     parser.add_argument("--end", type=int, default=None, help="Select end frame index, 1-based.")
+    parser.add_argument(
+        "--shuffle",
+        type=int,
+        default=None,
+        help="Shuffle input images with the given random seed while keeping the first frame fixed.",
+    )
     args = parser.parse_args()
 
     config = load_config(args.config)
@@ -95,6 +114,9 @@ def main():
     if args.max_images is not None:
         image_paths = image_paths[:args.max_images]
     image_paths = select_image_range(image_paths, begin=args.begin, end=args.end)
+    if args.shuffle is not None:
+        image_paths = shuffle_with_fixed_first(image_paths, args.shuffle)
+        print(f"Shuffled {len(image_paths)} images with seed {args.shuffle}, keeping the first frame fixed")
     run_image_dir = materialize_selected_images(image_paths, save_dir)
     print(f"Prepared {len(image_paths)} input images under {run_image_dir}")
 
