@@ -36,6 +36,7 @@ def main() -> None:
     parser.add_argument("--align_mode", type=str, default="graph", help="Reserved flag. Logged but not executed in MVP V1.")
     parser.add_argument("--config", type=str, default=os.path.join(REPO_ROOT, "configs", "base_config.yaml"), help="VGGT-Long config path used to locate optional descriptor weights.")
     parser.add_argument("--weight_threshold", type=float, default=None, help="Optional override for cluster graph edge threshold.")
+    parser.add_argument("--shuffle_seed", type=int, default=None, help="Optional seed to shuffle input processing order while preserving original sorted image ids in outputs.")
     args = parser.parse_args()
 
     pipeline_args = OrderFreePipelineArgs(
@@ -51,6 +52,7 @@ def main() -> None:
         align_mode=args.align_mode,
         config_path=args.config,
         weight_threshold=args.weight_threshold,
+        shuffle_seed=args.shuffle_seed,
     )
 
     summary = run_order_free_pipeline(pipeline_args)

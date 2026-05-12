@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import os
+import random
 from dataclasses import dataclass
-from typing import Dict, List
+from typing import Dict, List, Tuple
 
 from loop_utils.config_utils import load_config
 
@@ -29,10 +30,41 @@ class OrderFreePipelineArgs:
     align_mode: str
     config_path: str
     weight_threshold: float | None = None
+    shuffle_seed: int | None = None
 
 
 def _nodes_payload(nodes: List[ImageNode]) -> List[Dict[str, object]]:
     return [node.to_dict(include_descriptor=False) for node in nodes]
+
+
+def _build_image_items(image_paths: List[str], shuffle_seed: int | None) -> Tuple[List[Dict[str, object]], Dict[str, object]]:
+    items = [
+        {
+            "original_id": idx,
+            "path": path,
+            "original_sorted_index": idx,
+        }
+        for idx, path in enumerate(image_paths)
+    ]
+    order_info = {
+        "shuffle_seed": shuffle_seed,
+        "original_sorted_ids": [item["original_id"] for item in items],
+        "processing_order_original_ids": [item["original_id"] for item in items],
+        "shuffled": False,
+    }
+    if shuffle_seed is None:
+        return items, order_info
+
+    rng = random.Random(shuffle_seed)
+    shuffled = list(items)
+    rng.shuffle(shuffled)
+    order_info.update(
+        {
+            "shuffled": True,
+            "processing_order_original_ids": [item["original_id"] for item in shuffled],
+        }
+    )
+    return shuffled, order_info
 
 
 def run_order_free_pipeline(args: OrderFreePipelineArgs) -> Dict[str, object]:
@@ -51,12 +83,13 @@ def run_order_free_pipeline(args: OrderFreePipelineArgs) -> Dict[str, object]:
     )
 
     config = load_config(args.config_path)
-    image_paths = list_images(args.image_dir)
-    if not image_paths:
+    original_image_paths = list_images(args.image_dir)
+    if not original_image_paths:
         raise ValueError(f"No images found in {args.image_dir}")
+    image_items, order_info = _build_image_items(original_image_paths, args.shuffle_seed)
 
     descriptor_result = extract_image_descriptors(
-        image_paths=image_paths,
+        image_items=image_items,
         output_dir=output_dir,
         repo_root=repo_root,
         vggt_long_config=config,
@@ -113,6 +146,8 @@ def run_order_free_pipeline(args: OrderFreePipelineArgs) -> Dict[str, object]:
         "extractor_name": descriptor_result.extractor_name,
         "fallback_used": descriptor_result.fallback_used,
         "fallback_reason": descriptor_result.fallback_reason,
+        "shuffle_seed": args.shuffle_seed,
+        "input_order": order_info,
     }
 
     view_graph_payload = {
@@ -126,6 +161,8 @@ def run_order_free_pipeline(args: OrderFreePipelineArgs) -> Dict[str, object]:
             "fallback_used": descriptor_result.fallback_used,
             "candidate_retrieval_only": True,
             "temporal_sorting_used": False,
+            "shuffle_seed": args.shuffle_seed,
+            "input_order_shuffled": bool(order_info["shuffled"]),
         },
         "stats": view_graph_stats,
     }

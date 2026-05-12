@@ -39,22 +39,28 @@ def build_view_graph(nodes: List[ImageNode], knn: int = 10, mutual_knn: bool = T
     num_nodes = similarity.shape[0]
     candidate_neighbors: Dict[int, List[int]] = {}
     rank_lookup: Dict[Tuple[int, int], int] = {}
+    pos_to_id = [node.id for node in nodes]
+    id_to_pos = {node.id: pos for pos, node in enumerate(nodes)}
 
-    for i in range(num_nodes):
-        order = np.argsort(-similarity[i])
-        order = [idx for idx in order.tolist() if idx != i][: min(knn, num_nodes - 1)]
-        candidate_neighbors[i] = order
-        for rank, j in enumerate(order, start=1):
+    for pos_i in range(num_nodes):
+        order = np.argsort(-similarity[pos_i])
+        order = [idx for idx in order.tolist() if idx != pos_i][: min(knn, num_nodes - 1)]
+        i = pos_to_id[pos_i]
+        mapped_order = [pos_to_id[pos_j] for pos_j in order]
+        candidate_neighbors[i] = mapped_order
+        for rank, j in enumerate(mapped_order, start=1):
             rank_lookup[(i, j)] = rank
 
     edge_map: Dict[Tuple[int, int], ViewEdge] = {}
-    for i in range(num_nodes):
+    for i in pos_to_id:
+        pos_i = id_to_pos[i]
         for j in candidate_neighbors[i]:
+            pos_j = id_to_pos[j]
             is_mutual = i in candidate_neighbors.get(j, [])
             if mutual_knn and not is_mutual:
                 continue
             key = (i, j) if i < j else (j, i)
-            app_score = float((similarity[i, j] + 1.0) / 2.0)
+            app_score = float((similarity[pos_i, pos_j] + 1.0) / 2.0)
             edge = ViewEdge(
                 i=key[0],
                 j=key[1],
@@ -66,8 +72,8 @@ def build_view_graph(nodes: List[ImageNode], knn: int = 10, mutual_knn: bool = T
                     "rank_j_to_i": rank_lookup.get((j, i)),
                     "mutual_knn": bool(is_mutual),
                     "normalized_app_score": app_score,
-                    "fallback_used": bool(nodes[i].metadata.get("fallback_used") or nodes[j].metadata.get("fallback_used")),
-                    "extractor": nodes[i].metadata.get("extractor"),
+                    "fallback_used": bool(nodes[pos_i].metadata.get("fallback_used") or nodes[pos_j].metadata.get("fallback_used")),
+                    "extractor": nodes[pos_i].metadata.get("extractor"),
                 },
             )
             if key not in edge_map or edge.weight > edge_map[key].weight:

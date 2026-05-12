@@ -110,7 +110,7 @@ def _save_descriptor(cache_path: str, descriptor: np.ndarray) -> None:
 
 
 def _extract_with_fallback(
-    image_paths: List[str],
+    image_items: List[Dict[str, object]],
     cache_dir: str,
     config_hash: str,
 ) -> DescriptorExtractionResult:
@@ -118,7 +118,9 @@ def _extract_with_fallback(
     cache_hits = 0
     cache_misses = 0
     events: List[Dict[str, object]] = []
-    for image_id, image_path in enumerate(image_paths):
+    for item in image_items:
+        image_id = int(item["original_id"])
+        image_path = str(item["path"])
         key = descriptor_cache_key(image_path, "opencv_fallback", config_hash)
         cache_path = os.path.join(cache_dir, f"{key}.npy")
         descriptor = _load_cached_descriptor(cache_path)
@@ -138,6 +140,7 @@ def _extract_with_fallback(
                     "descriptor_dim": int(descriptor.shape[0]),
                     "cache_ref": os.path.relpath(cache_path, cache_dir),
                     "fallback_used": True,
+                    "original_sorted_index": image_id,
                 },
             )
         )
@@ -157,7 +160,7 @@ def _extract_with_fallback(
 
 
 def _extract_with_salad_dino(
-    image_paths: List[str],
+    image_items: List[Dict[str, object]],
     cache_dir: str,
     config_hash: str,
     repo_root: str,
@@ -173,7 +176,9 @@ def _extract_with_salad_dino(
     uncached: List[Tuple[int, str, str]] = []
     cache_hits = 0
     cache_misses = 0
-    for image_id, image_path in enumerate(image_paths):
+    for item in image_items:
+        image_id = int(item["original_id"])
+        image_path = str(item["path"])
         key = descriptor_cache_key(image_path, key_name, config_hash)
         cache_path = os.path.join(cache_dir, f"{key}.npy")
         descriptor = _load_cached_descriptor(cache_path)
@@ -233,7 +238,9 @@ def _extract_with_salad_dino(
                 cache_misses += 1
 
     nodes: List[ImageNode] = []
-    for image_id, image_path in enumerate(image_paths):
+    for item in image_items:
+        image_id = int(item["original_id"])
+        image_path = str(item["path"])
         descriptor = cached_descriptors[image_id]
         key = descriptor_cache_key(image_path, key_name, config_hash)
         cache_path = os.path.join(cache_dir, f"{key}.npy")
@@ -247,6 +254,7 @@ def _extract_with_salad_dino(
                     "descriptor_dim": int(descriptor.shape[0]),
                     "cache_ref": os.path.relpath(cache_path, cache_dir),
                     "fallback_used": False,
+                    "original_sorted_index": image_id,
                 },
             )
         )
@@ -266,7 +274,7 @@ def _extract_with_salad_dino(
 
 
 def _extract_with_dino_token(
-    image_paths: List[str],
+    image_items: List[Dict[str, object]],
     cache_dir: str,
     config_hash: str,
     repo_root: str,
@@ -282,7 +290,9 @@ def _extract_with_dino_token(
     uncached: List[Tuple[int, str, str]] = []
     cache_hits = 0
     cache_misses = 0
-    for image_id, image_path in enumerate(image_paths):
+    for item in image_items:
+        image_id = int(item["original_id"])
+        image_path = str(item["path"])
         key = descriptor_cache_key(image_path, key_name, config_hash)
         cache_path = os.path.join(cache_dir, f"{key}.npy")
         descriptor = _load_cached_descriptor(cache_path)
@@ -329,7 +339,9 @@ def _extract_with_dino_token(
                 cache_misses += 1
 
     nodes: List[ImageNode] = []
-    for image_id, image_path in enumerate(image_paths):
+    for item in image_items:
+        image_id = int(item["original_id"])
+        image_path = str(item["path"])
         descriptor = cached_descriptors[image_id]
         key = descriptor_cache_key(image_path, key_name, config_hash)
         cache_path = os.path.join(cache_dir, f"{key}.npy")
@@ -343,6 +355,7 @@ def _extract_with_dino_token(
                     "descriptor_dim": int(descriptor.shape[0]),
                     "cache_ref": os.path.relpath(cache_path, cache_dir),
                     "fallback_used": False,
+                    "original_sorted_index": image_id,
                 },
             )
         )
@@ -362,12 +375,24 @@ def _extract_with_dino_token(
 
 
 def extract_image_descriptors(
-    image_paths: List[str],
+    image_items: List[Dict[str, object]],
     output_dir: str,
     repo_root: str,
     vggt_long_config: Dict[str, object],
 ) -> DescriptorExtractionResult:
     cache_dir = ensure_dir(os.path.join(output_dir, "logs", "descriptor_cache"))
+    if not image_items:
+        return DescriptorExtractionResult(
+            nodes=[],
+            extractor_name="none",
+            descriptor_dim=0,
+            fallback_used=False,
+            fallback_reason=None,
+            cache_dir=cache_dir,
+            cache_hits=0,
+            cache_misses=0,
+            events=[],
+        )
     config_hash = stable_hash(
         {
             "weights": vggt_long_config.get("Weights", {}),
@@ -377,14 +402,14 @@ def extract_image_descriptors(
     events: List[Dict[str, object]] = []
 
     try:
-        result = _extract_with_salad_dino(image_paths, cache_dir, config_hash, repo_root, vggt_long_config)
+        result = _extract_with_salad_dino(image_items, cache_dir, config_hash, repo_root, vggt_long_config)
         result.events.extend(events)
         return result
     except Exception as exc:
         events.append({"type": "fallback", "extractor": "salad_dino", "reason": str(exc)})
 
     try:
-        result = _extract_with_dino_token(image_paths, cache_dir, config_hash, repo_root, vggt_long_config)
+        result = _extract_with_dino_token(image_items, cache_dir, config_hash, repo_root, vggt_long_config)
         result.fallback_used = True
         result.fallback_reason = "salad_dino_failed"
         result.events = events + result.events
@@ -392,7 +417,7 @@ def extract_image_descriptors(
     except Exception as exc:
         events.append({"type": "fallback", "extractor": "dino_global_token", "reason": str(exc)})
 
-    result = _extract_with_fallback(image_paths, cache_dir, config_hash)
+    result = _extract_with_fallback(image_items, cache_dir, config_hash)
     result.events = events + result.events
     result.fallback_reason = events[-1]["reason"] if events else result.fallback_reason
     return result
