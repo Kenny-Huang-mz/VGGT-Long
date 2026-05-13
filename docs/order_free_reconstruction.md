@@ -104,3 +104,37 @@ output_dir/
 - `geom_score`、`uncertainty`、`sim3`、`residual` 目前只是 schema 占位
 
 这些内容会在下一阶段接入，并复用 `Pi3Adapter` 与 `VGGT-Long` 现有的 `Sim(3)` 工具链。
+
+## Priority 2：完整重建闭环
+现在额外提供了 `Priority 2` 的完整入口：
+
+```bash
+python tools/order_free_reconstruct_full.py \
+  --image_dir /path/to/images \
+  --output_dir /path/to/output \
+  --config ./configs/base_config.yaml \
+  --backbone pi3 \
+  --max_chunk_size 80 \
+  --min_chunk_size 20 \
+  --knn 10 \
+  --bridge_top_m 12 \
+  --mutual_knn true \
+  --align_mode graph_mst
+```
+
+这条链路会执行：
+
+`Priority 1 chunk graph`
+→ `Pi3 local chunk reconstruction`
+→ `shared bridge frame camera-center Sim(3)`
+→ `MST global composition`
+→ `global poses + merged point cloud`
+
+新增输出：
+- `reconstruction/chunk_predictions/`：每个 chunk 的 Pi3 缓存结果
+- `reconstruction/chunk_alignments.json`：chunk 间 Sim(3)、shared frames、residual
+- `reconstruction/global_poses.json`：chunk 全局变换和每张图的 global pose
+- `reconstruction/merged_pointcloud.ply`：第一版融合点云
+- `reconstruction/merged_pointcloud.npz`：结构化点云缓存
+- `reconstruction/components.json`：连通分量、root chunk、失败信息
+- `logs/reconstruction_summary.json`：重建阶段统计
