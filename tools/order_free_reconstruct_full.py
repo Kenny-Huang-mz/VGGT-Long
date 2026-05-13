@@ -9,7 +9,7 @@ if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
 from order_free.pipeline import OrderFreePipelineArgs, run_order_free_pipeline
-from order_free.reconstruction import ReconstructionArgs, run_priority2_reconstruction
+from order_free.reconstruction import ReconstructionArgs, run_priority2_reconstruction, validate_backbone_config
 
 
 def str2bool(value: str) -> bool:
@@ -36,7 +36,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Run the full order-free reconstruction pipeline (Priority 1 + Priority 2).")
     parser.add_argument("--image_dir", type=str, required=True, help="Directory containing unordered input images.")
     parser.add_argument("--output_dir", type=str, required=True, help="Directory to save graph, chunk, and reconstruction artifacts.")
-    parser.add_argument("--backbone", type=str, default="pi3", choices=["pi3", "vggt"], help="Priority 2 currently supports pi3 only.")
+    parser.add_argument("--backbone", type=str, default="pi3", choices=["pi3", "vggt"], help="Priority 2 local reconstruction backbone.")
     parser.add_argument("--max_chunk_size", type=int, default=80, help="Maximum images per chunk, including shared bridge frames.")
     parser.add_argument("--min_chunk_size", type=int, default=20, help="Preferred minimum cluster core size before weak-cluster fallback.")
     parser.add_argument("--knn", type=int, default=10, help="Top-k nearest neighbors for candidate view-graph construction.")
@@ -52,9 +52,13 @@ def main() -> None:
     parser.add_argument("--pointcloud_sample_ratio", type=float, default=1.0, help="Random sampling ratio applied after confidence filtering when exporting the merged point cloud.")
     parser.add_argument("--pointcloud_conf_quantile", type=float, default=0.7, help="Per-chunk confidence quantile threshold used to filter points before merging.")
     args = parser.parse_args()
+    from loop_utils.config_utils import load_config
 
-    if args.backbone != "pi3":
-        raise ValueError("Priority 2 not implemented for vggt; use --backbone pi3.")
+    config = load_config(args.config)
+    weights_key_used = validate_backbone_config(args.backbone, config)
+    print(f"Selected backbone: {args.backbone}")
+    print(f"Config path: {os.path.abspath(args.config)}")
+    print(f"Weights key used: {weights_key_used}")
 
     if args.skip_priority1_if_exists and _priority1_outputs_exist(args.output_dir):
         priority1_summary = None

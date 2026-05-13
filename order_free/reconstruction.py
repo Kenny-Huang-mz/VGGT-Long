@@ -39,6 +39,33 @@ class ReconstructionArgs:
     pointcloud_conf_quantile: float = 0.7
 
 
+def validate_backbone_config(backbone: str, config: Dict[str, object]) -> str:
+    weights = config.get("Weights", {})
+    if backbone == "pi3":
+        weight_key = "Pi3"
+    elif backbone == "vggt":
+        weight_key = "VGGT"
+    else:
+        raise ValueError(f"Unsupported backbone: {backbone}")
+
+    weight_path = weights.get(weight_key)
+    if not weight_path:
+        raise ValueError(f"--backbone {backbone} requires Weights.{weight_key} in the config")
+    return weight_key
+
+
+def build_model_adapter(backbone: str, config: Dict[str, object]):
+    if backbone == "pi3":
+        from base_models.base_model import Pi3Adapter
+
+        return Pi3Adapter(config)
+    if backbone == "vggt":
+        from base_models.base_model import VGGTAdapter
+
+        return VGGTAdapter(config)
+    raise ValueError(f"Unsupported backbone: {backbone}")
+
+
 def _config_hash(config_path: str, config: Dict[str, object]) -> str:
     payload = {"config_path": os.path.abspath(config_path), "config": config}
     return stable_hash(payload)
@@ -79,6 +106,7 @@ def _to_chunk_prediction(chunk: Chunk, prediction_dict: Dict[str, object], cache
             "cache_key": cache_key,
             "chunk_id": chunk.id,
             "source_cluster_ids": list(chunk.source_cluster_ids),
+            "backbone": str(prediction_dict.get("_backbone", "")),
         },
     )
 
@@ -151,14 +179,13 @@ def _transform_predictions(
 
 
 def run_priority2_reconstruction(args: ReconstructionArgs) -> Dict[str, object]:
-    if args.backbone != "pi3":
-        raise ValueError("Priority 2 currently supports backbone=pi3 only")
     if args.align_mode != "graph_mst":
         raise ValueError("Priority 2 currently supports align_mode=graph_mst only")
 
     from loop_utils.config_utils import load_config
 
     config = load_config(args.config_path)
+    weight_key = validate_backbone_config(args.backbone, config)
     config_hash = _config_hash(args.config_path, config)
     dirs = reconstruction_dirs(args.output_dir, args.chunk_cache_dir)
     chunk_graph = load_chunk_graph_from_output(args.output_dir)
@@ -174,10 +201,10 @@ def run_priority2_reconstruction(args: ReconstructionArgs) -> Dict[str, object]:
     needs_inference = any(not info.cache_hit for info in cache_infos.values())
 
     model = None
+    adapter_class = "Pi3Adapter" if args.backbone == "pi3" else "VGGTAdapter"
     if needs_inference:
-        from base_models.base_model import Pi3Adapter
-
-        model = Pi3Adapter(config)
+        model = build_model_adapter(args.backbone, config)
+        adapter_class = type(model).__name__
         model.load()
 
     for chunk in sorted(chunk_graph.chunks, key=lambda item: item.id):
@@ -193,6 +220,7 @@ def run_priority2_reconstruction(args: ReconstructionArgs) -> Dict[str, object]:
             for key, value in list(prediction_dict.items()):
                 if hasattr(value, "detach"):
                     prediction_dict[key] = value.detach().cpu().numpy().squeeze(0)
+            prediction_dict["_backbone"] = args.backbone
             prediction = _to_chunk_prediction(chunk, prediction_dict, cache_info.cache_key)
             save_chunk_prediction(cache_info.cache_path, prediction)
             predictions_by_chunk[chunk.id] = prediction
@@ -234,8 +262,11 @@ def run_priority2_reconstruction(args: ReconstructionArgs) -> Dict[str, object]:
     successful_alignments = [item for item in alignments if item.sim3 is not None and item.residual is not None]
     residuals = [item.residual for item in successful_alignments if item.residual is not None]
     summary = {
-        "method": "order_free_reconstruction_mvp_v2_pi3",
+        "method": f"order_free_reconstruction_mvp_v2_{args.backbone}",
         "backbone": args.backbone,
+        "adapter_class": adapter_class,
+        "weights_key_used": weight_key,
+        "config_reference_frame_mid": bool(config.get("Model", {}).get("reference_frame_mid", False)) if args.backbone == "vggt" else None,
         "num_chunks": len(chunk_graph.chunks),
         "num_successful_chunk_predictions": len(predictions_by_chunk),
         "failed_chunks": failed_chunks,
@@ -248,7 +279,7 @@ def run_priority2_reconstruction(args: ReconstructionArgs) -> Dict[str, object]:
         "num_global_image_poses": len(image_pose_records),
         "merged_point_count": int(points.shape[0]),
         "notes": [
-            "local reconstruction is Pi3-only in Priority 2",
+            f"local reconstruction uses {args.backbone}",
             "chunk alignment uses shared bridge-frame camera centers",
             "global synchronization uses maximum spanning tree composition",
             "point-map alignment fallback and loop optimization are not enabled in this milestone",

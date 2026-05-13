@@ -112,7 +112,7 @@ output_dir/
 python tools/order_free_reconstruct_full.py \
   --image_dir /path/to/images \
   --output_dir /path/to/output \
-  --config ./configs/base_config.yaml \
+  --config ./configs/Pi3.yaml \
   --backbone pi3 \
   --max_chunk_size 80 \
   --min_chunk_size 20 \
@@ -125,10 +125,32 @@ python tools/order_free_reconstruct_full.py \
 这条链路会执行：
 
 `Priority 1 chunk graph`
-→ `Pi3 local chunk reconstruction`
+→ `Pi3/VGGT local chunk reconstruction`
 → `shared bridge frame camera-center Sim(3)`
 → `MST global composition`
 → `global poses + merged point cloud`
+
+`Priority 1` 与 backbone 基本无关；真正切换 `Pi3` 或 `VGGT` 的是 `Priority 2` 的 `--backbone` 与对应 yaml 中的权重路径。
+
+推荐命令：
+
+```bash
+python tools/order_free_reconstruct_full.py \
+  --image_dir /path/to/images \
+  --output_dir /path/to/output_pi3 \
+  --config ./configs/Pi3.yaml \
+  --backbone pi3 \
+  --align_mode graph_mst
+```
+
+```bash
+python tools/order_free_reconstruct_full.py \
+  --image_dir /path/to/images \
+  --output_dir /path/to/output_vggt \
+  --config ./configs/VGGT.yaml \
+  --backbone vggt \
+  --align_mode graph_mst
+```
 
 新增输出：
 - `reconstruction/chunk_predictions/`：每个 chunk 的 Pi3 缓存结果
